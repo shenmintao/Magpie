@@ -41,4 +41,7 @@ private:
 	ComPtr<ID3D11Buffer> _withCursorCB;
 	ID3D11SamplerState* _linearSam = nullptr;
 	ID3D11SamplerState* _pointSam = nullptr;
+
+	ComPtr<ID3D11BlendState1> _andBlendState;
+	ComPtr<ID3D11BlendState1> _xorBlendState;
 };

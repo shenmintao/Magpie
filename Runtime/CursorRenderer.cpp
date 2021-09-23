@@ -14,50 +14,37 @@ bool CursorRenderer::Initialize(ComPtr<ID3D11Texture2D> renderTarget, SIZE outpu
 	_d3dDC = renderer.GetD3DDC();
 	_d3dDevice = renderer.GetD3DDevice();
 
-	// 限制鼠标在窗口内
-	if (!ClipCursor(&App::GetInstance().GetSrcClientRect())) {
-		SPDLOG_LOGGER_ERROR(logger, MakeWin32ErrorMsg("ClipCursor 失败"));
+	D3D11_FEATURE_DATA_D3D11_OPTIONS options;
+	HRESULT hr = _d3dDevice->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &options, sizeof(options));
+	if (FAILED(hr)) {
+		SPDLOG_LOGGER_ERROR(logger, MakeComErrorMsg("CheckFeatureSupport 失败", hr));
+		return false;
 	}
 
-	D3D11_TEXTURE2D_DESC rtDesc;
-	renderTarget->GetDesc(&rtDesc);
-
-	_destRect.left = (rtDesc.Width - outputSize.cx) / 2;
-	_destRect.right = _destRect.left + outputSize.cx;
-	_destRect.top = (rtDesc.Height - outputSize.cy) / 2;
-	_destRect.bottom = _destRect.top + outputSize.cy;
-
-	_vp.TopLeftX = (FLOAT)_destRect.left;
-	_vp.TopLeftY = (FLOAT)_destRect.top;
-	_vp.Width = FLOAT(_destRect.right - _destRect.left);
-	_vp.Height = FLOAT(_destRect.bottom - _destRect.top);
-	_vp.MinDepth = 0.0f;
-	_vp.MaxDepth = 1.0f;
-
-	const RECT& srcClient = app.GetSrcClientRect();
-	SIZE srcSize = { srcClient.right - srcClient.left, srcClient.bottom - srcClient.top };
-
-	_scaleX = float(_destRect.right - _destRect.left) / srcSize.cx;
-	_scaleY = float(_destRect.bottom - _destRect.top) / srcSize.cy;
-
-	SPDLOG_LOGGER_INFO(logger, fmt::format("scaleX：{}，scaleY：{}", _scaleX, _scaleY));
-
-	if (App::GetInstance().IsAdjustCursorSpeed()) {
-		// 设置鼠标移动速度
-		if (SystemParametersInfo(SPI_GETMOUSESPEED, 0, &_cursorSpeed, 0)) {
-			long newSpeed = std::clamp(lroundf(_cursorSpeed / (_scaleX + _scaleY) * 2), 1L, 20L);
-
-			if (!SystemParametersInfo(SPI_SETMOUSESPEED, 0, (PVOID)(intptr_t)newSpeed, 0)) {
-				SPDLOG_LOGGER_ERROR(logger, MakeWin32ErrorMsg("设置光标移速失败"));
-			}
-		} else {
-			SPDLOG_LOGGER_ERROR(logger, MakeWin32ErrorMsg("获取光标移速失败"));
-		}
-
-		SPDLOG_LOGGER_INFO(logger, "已调整光标移速");
+	if (!options.OutputMergerLogicOp) {
+		SPDLOG_LOGGER_ERROR(logger, "当前硬件不支持 OutputMergerLogicOp");
+		return false;
 	}
 
-	HRESULT hr = renderer.GetRenderTargetView(renderTarget.Get(), &_rtv);
+	D3D11_BLEND_DESC1 desc{};
+	desc.RenderTarget[0].LogicOpEnable = TRUE;
+	desc.RenderTarget[0].LogicOp = D3D11_LOGIC_OP_AND;
+	desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+
+	hr =  _d3dDevice->CreateBlendState1(&desc, &_andBlendState);
+	if (FAILED(hr)) {
+		SPDLOG_LOGGER_ERROR(logger, MakeComErrorMsg("CreateBlendState1 失败", hr));
+		return false;
+	}
+
+	desc.RenderTarget[0].LogicOp = D3D11_LOGIC_OP_XOR;
+	hr = _d3dDevice->CreateBlendState1(&desc, &_xorBlendState);
+	if (FAILED(hr)) {
+		SPDLOG_LOGGER_ERROR(logger, MakeComErrorMsg("CreateBlendState1 失败", hr));
+		return false;
+	}
+
+	hr = renderer.GetRenderTargetView(renderTarget.Get(), &_rtv);
 	if (FAILED(hr)) {
 		SPDLOG_LOGGER_ERROR(logger, MakeComErrorMsg("GetRenderTargetView 失败", hr));
 		return false;
@@ -89,22 +76,66 @@ bool CursorRenderer::Initialize(ComPtr<ID3D11Texture2D> renderTarget, SIZE outpu
 		return false;
 	}
 
+
+	D3D11_TEXTURE2D_DESC rtDesc;
+	renderTarget->GetDesc(&rtDesc);
+
+	_destRect.left = (rtDesc.Width - outputSize.cx) / 2;
+	_destRect.right = _destRect.left + outputSize.cx;
+	_destRect.top = (rtDesc.Height - outputSize.cy) / 2;
+	_destRect.bottom = _destRect.top + outputSize.cy;
+
+	_vp.TopLeftX = (FLOAT)_destRect.left;
+	_vp.TopLeftY = (FLOAT)_destRect.top;
+	_vp.Width = FLOAT(_destRect.right - _destRect.left);
+	_vp.Height = FLOAT(_destRect.bottom - _destRect.top);
+	_vp.MinDepth = 0.0f;
+	_vp.MaxDepth = 1.0f;
+
+	const RECT& srcClient = app.GetSrcClientRect();
+	SIZE srcSize = { srcClient.right - srcClient.left, srcClient.bottom - srcClient.top };
+
+	_scaleX = float(_destRect.right - _destRect.left) / srcSize.cx;
+	_scaleY = float(_destRect.bottom - _destRect.top) / srcSize.cy;
+
+	SPDLOG_LOGGER_INFO(logger, fmt::format("scaleX：{}，scaleY：{}", _scaleX, _scaleY));
+	/*
+	if (App::GetInstance().IsAdjustCursorSpeed()) {
+		// 设置鼠标移动速度
+		if (SystemParametersInfo(SPI_GETMOUSESPEED, 0, &_cursorSpeed, 0)) {
+			long newSpeed = std::clamp(lroundf(_cursorSpeed / (_scaleX + _scaleY) * 2), 1L, 20L);
+
+			if (!SystemParametersInfo(SPI_SETMOUSESPEED, 0, (PVOID)(intptr_t)newSpeed, 0)) {
+				SPDLOG_LOGGER_ERROR(logger, MakeWin32ErrorMsg("设置光标移速失败"));
+			}
+		} else {
+			SPDLOG_LOGGER_ERROR(logger, MakeWin32ErrorMsg("获取光标移速失败"));
+		}
+
+		SPDLOG_LOGGER_INFO(logger, "已调整光标移速");
+	}
+
+	// 限制鼠标在窗口内
+	if (!ClipCursor(&srcClient)) {
+		SPDLOG_LOGGER_ERROR(logger, MakeWin32ErrorMsg("ClipCursor 失败"));
+	}
+
 	if (!MagShowSystemCursor(FALSE)) {
 		SPDLOG_LOGGER_ERROR(logger, MakeWin32ErrorMsg("MagShowSystemCursor 失败"));
 	}
-
+	*/
 	SPDLOG_LOGGER_INFO(logger, "CursorRenderer 初始化完成");
 	return true;
 }
 
 CursorRenderer::~CursorRenderer() {
-	ClipCursor(nullptr);
+	/*ClipCursor(nullptr);
 
 	if (App::GetInstance().IsAdjustCursorSpeed()) {
 		SystemParametersInfo(SPI_SETMOUSESPEED, 0, (PVOID)(intptr_t)_cursorSpeed, 0);
 	}
 
-	MagShowSystemCursor(TRUE);
+	MagShowSystemCursor(TRUE);*/
 
 	SPDLOG_LOGGER_INFO(logger, "CursorRenderer 已析构");
 }
@@ -196,10 +227,10 @@ bool CursorRenderer::_ResolveCursor(HCURSOR hCursor, _CursorInfo& result) const 
 		BYTE* upPtr = &pixels[1];
 		BYTE* downPtr = &pixels[static_cast<size_t>(halfSize) * 4];
 		for (int i = 0; i < halfSize; ++i) {
-			*upPtr = *downPtr;
 			// 判断光标是否存在反色部分
-			if (!result.hasInv && *(upPtr - 1) == 255 && *upPtr == 255) {
+			if (*downPtr == 255 && *upPtr == 255) {
 				result.hasInv = true;
+				break;
 			}
 
 			upPtr += 4;
@@ -346,58 +377,67 @@ void CursorRenderer::Draw() {
 		return;
 	}
 
-	_d3dDC->OMSetRenderTargets(1, &_rtv, nullptr);
-	_d3dDC->RSSetViewports(1, &_vp);
 	
-	D3D11_MAPPED_SUBRESOURCE ms;
-	_d3dDC->Map(_vtxBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms);
+	Renderer& renderer = App::GetInstance().GetRenderer();
+	renderer.SetCopyPS(_pointSam, info->texture.Get());
+	renderer.SetSimpleVS(_vtxBuffer.Get());
 
 	float left = targetScreenPos.x / _vp.Width * 2 - 1.0f;
 	float top = 1.0f - targetScreenPos.y / _vp.Height * 2;
 	float right = left + info->width / _vp.Width * 2;
 	float bottom = top - info->height / _vp.Height * 2;
 
-	VertexPositionTexture* data = (VertexPositionTexture*)ms.pData;
-	data[0] = { XMFLOAT3(left, top, 0.5f), XMFLOAT2(0.0f, 0.0f) };
-	data[1] = { XMFLOAT3(right, top, 0.5f), XMFLOAT2(1.0f, 0.0f) };
-	data[2] = { XMFLOAT3(left, bottom, 0.5f), XMFLOAT2(0.0f, 1.0f) };
-	data[3] = { XMFLOAT3(right, bottom, 0.5f), XMFLOAT2(1.0f, 1.0f) };
-
-	_d3dDC->Unmap(_vtxBuffer.Get(), 0);
-
-	Renderer& renderer = App::GetInstance().GetRenderer();
-	renderer.SetSimpleVS(_vtxBuffer.Get());
-
 	if (!info->hasInv) {
-		renderer.SetCopyPS(_pointSam, info->texture.Get());
+		_d3dDC->OMSetRenderTargets(1, &_rtv, nullptr);
+		_d3dDC->RSSetViewports(1, &_vp);
+
+		D3D11_MAPPED_SUBRESOURCE ms;
+		_d3dDC->Map(_vtxBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms);
+
+		VertexPositionTexture* data = (VertexPositionTexture*)ms.pData;
+		data[0] = { XMFLOAT3(left, top, 0.5f), XMFLOAT2(0.0f, 0.0f) };
+		data[1] = { XMFLOAT3(right, top, 0.5f), XMFLOAT2(1.0f, 0.0f) };
+		data[2] = { XMFLOAT3(left, bottom, 0.5f), XMFLOAT2(0.0f, 1.0f) };
+		data[3] = { XMFLOAT3(right, bottom, 0.5f), XMFLOAT2(1.0f, 1.0f) };
+
+		_d3dDC->Unmap(_vtxBuffer.Get(), 0);
+		
 		renderer.SetAlphaBlend(true);
 		_d3dDC->Draw(4, 0);
-
 		renderer.SetAlphaBlend(false);
 	} else {
-		ComPtr<ID3D11Resource> texture, renderTarget;
-
-		info->texture->GetResource(&texture);
-		_rtv->GetResource(&renderTarget);
-
-		// 复制时 srcBox 必须在 srcResource 内
-		D3D11_BOX box {
-			(UINT)std::max(cursorRect.left, _destRect.left),
-			(UINT)std::max(cursorRect.top, _destRect.top),
-			0,
-			(UINT)std::min(cursorRect.right, _destRect.right),
-			(UINT)std::min(cursorRect.bottom, _destRect.bottom),
-			1
-		};
 		
-		_d3dDC->CopySubresourceRegion(texture.Get(), 0, box.left - cursorRect.left, box.top - cursorRect.top + info->height, 0, renderTarget.Get(), 0, &box);
+		_d3dDC->OMSetRenderTargets(1, &_rtv, nullptr);
+		_d3dDC->RSSetViewports(1, &_vp);
 
-		_d3dDC->PSSetShader(_monoCursorPS.Get(), nullptr, 0);
-		_d3dDC->PSSetConstantBuffers(0, 0, nullptr);
-		ID3D11ShaderResourceView* t = info->texture.Get();
-		_d3dDC->PSSetShaderResources(0, 1, &t);
-		_d3dDC->PSSetSamplers(0, 1, &_pointSam);
+		D3D11_MAPPED_SUBRESOURCE ms;
+		_d3dDC->Map(_vtxBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms);
 
+		VertexPositionTexture* data = (VertexPositionTexture*)ms.pData;
+		data[0] = { XMFLOAT3(left, top, 0.5f), XMFLOAT2(0.0f, 0.0f) };
+		data[1] = { XMFLOAT3(right, top, 0.5f), XMFLOAT2(1.0f, 0.0f) };
+		data[2] = { XMFLOAT3(left, bottom, 0.5f), XMFLOAT2(0.0f, 0.5f) };
+		data[3] = { XMFLOAT3(right, bottom, 0.5f), XMFLOAT2(1.0f, 0.5f) };
+
+		_d3dDC->Unmap(_vtxBuffer.Get(), 0);
+
+
+		_d3dDC->OMSetBlendState(_andBlendState.Get(), nullptr, 0xffffffff);
 		_d3dDC->Draw(4, 0);
+
+		_d3dDC->Map(_vtxBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms);
+
+		data = (VertexPositionTexture*)ms.pData;
+		data[0] = { XMFLOAT3(left, top, 0.5f), XMFLOAT2(0.0f, 0.5f) };
+		data[1] = { XMFLOAT3(right, top, 0.5f), XMFLOAT2(1.0f, 0.5f) };
+		data[2] = { XMFLOAT3(left, bottom, 0.5f), XMFLOAT2(0.0f, 1.0f) };
+		data[3] = { XMFLOAT3(right, bottom, 0.5f), XMFLOAT2(1.0f, 1.0f) };
+
+		_d3dDC->Unmap(_vtxBuffer.Get(), 0);
+
+		_d3dDC->OMSetBlendState(_xorBlendState.Get(), nullptr, 0xffffffff);
+		_d3dDC->Draw(4,0);
+
+		_d3dDC->OMSetBlendState(nullptr, nullptr, 0xffffffff);
 	}
 }
